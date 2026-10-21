@@ -1,1 +1,81 @@
+name: Compilar Easy PS2 FPKG em PT-BR
 
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compilar-android:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Clonar o seu fork com a tradução
+        uses: actions/checkout@v4
+
+      - name: Configurar Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Configurar SDK do Android
+        uses: android-actions/setup-android@v3
+
+      - name: Instalar plataformas Android
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platforms;android-34" "build-tools;34.0.0"
+
+      - name: Configurar .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Instalar a workload .NET Android
+        run: dotnet workload install android --skip-manifest-update
+
+      - name: Buscar dependência LibOrbisPkg
+        run: bash scripts/fetch-liborbispkg.sh
+
+      - name: Aplicar a tradução PT-BR
+        run: python3 scripts/aplicar_ptbr.py
+
+      - name: Gerar chave de assinatura para este build
+        run: |
+          echo "ANDROID_SIGN_PASS=$(openssl rand -hex 20)" >> "$GITHUB_ENV"
+          keytool -genkeypair -noprompt -keystore "$RUNNER_TEMP/ptbr.keystore" \
+            -alias ptbr -keyalg RSA -keysize 3072 -validity 3650 \
+            -dname "CN=Easy PS2 FPKG PT-BR,O=Personal Build,C=BR" \
+            -storepass android1234 -keypass android1234
+          echo "ANDROID_SIGN_KEYSTORE=$RUNNER_TEMP/ptbr.keystore" >> "$GITHUB_ENV"
+
+      - name: Compilar e assinar APK arm64
+        run: |
+          dotnet publish src/ps2fpkg.android/ps2fpkg.android.csproj \
+            --configuration Release --framework net8.0-android \
+            --runtime android-arm64 \
+            -p:RuntimeIdentifiers=android-arm64 \
+            -p:AndroidPackageFormat=apk \
+            -p:AndroidKeyStore=true \
+            -p:AndroidSigningKeyStore="$ANDROID_SIGN_KEYSTORE" \
+            -p:AndroidSigningKeyAlias=ptbr \
+            -p:AndroidSigningStorePass=android1234 \
+            -p:AndroidSigningKeyPass=android1234
+
+      - name: Reunir APK gerado
+        run: |
+          mkdir -p output
+          find src/ps2fpkg.android/bin/Release -name '*-Signed.apk' -type f -print
+          APK=$(find src/ps2fpkg.android/bin/Release -name '*-Signed.apk' -type f | head -n1)
+          test -n "$APK" || { echo "Erro: APK assinado não encontrado"; exit 1; }
+          cp "$APK" output/Easy-PS2-FPKG-PTBR-android-arm64.apk
+          sha256sum output/*.apk > output/SHA256SUMS.txt
+
+      - name: Disponibilizar o APK para download
+        uses: actions/upload-artifact@v4
+        with:
+          name: Easy-PS2-FPKG-PTBR-Android
+          path: output/*
+          if-no-files-found: error
